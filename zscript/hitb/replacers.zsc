@@ -1,0 +1,329 @@
+class HT_DebugPuff : BulletPuff replaces BulletPuff
+{
+    // Name damageCharacteristic;
+    // property DamageCharacteristic : damageCharacteristic;
+
+    // Default{
+    //     // PainType "Shotgun";
+    //     DamageType "Shotgun";
+    // }
+
+    States
+    {
+    Spawn:
+        PUFF A 4 Bright;
+        PUFF B 4;
+    Melee:
+        PUFF CD 4;
+        Stop;
+    // Crash:
+    //     TNT1 A 0 A_Log("Position Y: "..self.pos.y);
+    //     PUFF CD 4;
+    //     Stop;
+    }
+}
+
+
+class Hitbox : Object
+{
+    Name type;                  // damage type name for States.
+    double damageMultiplier;
+    double heightOffset;        // Z end of the hitbox region from monster's top.
+    double centerThreshold;     // size of the hitbox center region (If negative, there will be no left/right sides for this hitbox).
+   
+    // These 2 don't need to be set, they can inherit from damageMultiplier. Has no effect if centerThreshold < 0.
+    double dmgLeftSide;         // damage multiplier when left side hit. 
+    double dmgRightSide;        // ^^ for right side.
+}
+
+
+// class HT_Zombieman : Zombieman replaces Zombieman
+class HT_Zombieman : Zombieman replaces Zombieman
+{
+    Array<Hitbox> hitboxes;
+
+    static const Name customDmgTypes[] = {
+        'Shotgun'
+    };
+    protected Name savedDmgType;
+
+
+    Default{
+        Health 200;
+        DamageFactor "Head", 2.0;
+        PainChance "Head", 256;
+        DamageFactor "TorsoArms", 1.0;
+        DamageFactor "TorsoArmsLeft", 0.8; // left arm
+        DamageFactor "TorsoArmsRight", 0.8; // right arm
+    }
+
+
+    /***    Conversion from relative coords to global ones.
+     **     Credits to PB for this specific code, although I also found it on the ZDoom wiki.
+     **        +X: Forward. -X: Backward.
+     **        +Y: Left.    -Y: Right.
+     **        +Z: Up.      -Z: Down.
+     **     Y sign is inverted, so it becomes easier to understand... */
+	static
+    Vector3 RelativeToGlobalCoords(Vector3 startpos, Vector3 viewAngles, Vector3 offset)
+	{
+		Quat dir = Quat.FromAngles(viewAngles.x, viewAngles.y, viewAngles.z);
+		Vector3 ofs = dir * (offset.x, -offset.y, offset.z);
+
+		return level.vec3offset(startpos, ofs);
+	}
+
+
+    override
+    void PostBeginPlay()
+    {
+        Super.PostBeginPlay();
+        // CreateHitbox('Head', 2.0, 16, -1);
+        CreateHitbox('TorsoArms', 1.0, heightOffs:30, centerThre:8, dmgLeft:0.7, dmgRight:0.8);
+    }
+
+
+    override
+    int DamageMobj(Actor inflictor, Actor source, int damage, Name mod, int flags, double angle)
+    {
+        Name realDmgType = mod;
+        self.savedDmgType = 'none';
+
+        if( source && inflictor && !source.bISMONSTER && source.player ) 
+        {
+            if( mod != 'Hitscan' && mod != 'Normal' ) // was a custom dmgtype attack
+            {
+                // hate how i have to do this with constant arrays
+                bool found = false;
+                for( int i = 0; i < customDmgTypes.Size(); i++ ) {
+                    if( customDmgTypes[i] == mod )
+                        found = true;
+                }
+
+                // If the dmg type of the attack was not in this array, just damage the monster as usual with its
+                //  respective, unchanged dmgtype.
+                if( !found ) {
+                    return super.DamageMobj(inflictor, source, damage, mod, flags, angle); // like fire, ice, etc...
+                }
+                else {
+                    self.savedDmgType = mod; // shotgun, highcaliber, etc...
+                }
+            }
+
+            // continue as usual
+            let puffpos = inflictor.pos.PlusZ(2.0); // more responsive
+            Hitbox current;
+
+            for( int i = 0; i < hitboxes.Size(); i++ )
+            {
+                current = hitboxes[i];
+                double boxz = (self.pos.z + self.height) - current.heightOffset;
+
+                if( puffpos.z < boxz ) {
+                    continue; // Not hit, keep looping
+                }
+
+                /*  Hitbox was hit...      */
+                realDmgType = current.type;
+
+                if( current.centerThreshold >= 0 ) // Differentiate left/right side
+                {
+                    Vector2 front = (self.pos.x + self.radius, self.pos.y); // 0. Get monster's default "front face"...
+                    Vector2 rotatedHitpos = puffpos.xy - (self.pos.x, self.pos.y); // 1. Get offsets between puff's XY and the monster's...
+                    rotatedHitpos = RotateVector(rotatedHitpos, -self.angle); // 2. Rotate offsets by the monster's angle...
+                    rotatedHitpos = (self.pos.x + rotatedHitpos.x, self.pos.y + rotatedHitpos.y); // 3. Finally, apply them.
+                    // Thanks plushcabinet :)
+                    float ydiff = rotatedHitpos.y - front.y;
+                    
+                    if( ydiff > current.centerThreshold ) {
+                        realDmgType = realDmgType.."Left";
+                        Console.Printf("You hit the \cyLEFT\c- side of the hitbox.");
+                    }
+                    else if( ydiff < -current.centerThreshold ) {
+                        realDmgType = realDmgType.."Right";
+                        Console.Printf("You hit the \cgRIGHT\c- side of the hitbox.");
+                    }
+                    // Console.Printf("difference: "..ydiff);
+                }
+
+                if( hitboxdebugmode ) {
+                    Line3d.SpawnTo(source.pos.PlusZ(source.height*0.5), puffpos);
+                }
+
+                break;
+            }
+            
+        }
+
+        // The monster just calls damagemobj with the hitbox that was hit (if any). 
+        //      If there is a need to make custom behavior for shotgun/strong/weak/-type weapons, these must
+        //      be defined within the monster's respective Pain/Death/XDeath states.
+        //      See JumpIfSpecialDamage().
+        return super.DamageMobj(inflictor, source, damage, realDmgType, flags, angle);
+    }
+
+
+    protected
+    state JumpIfSpecialDamage(Name baseState, Name subState)
+    {
+        if( self.savedDmgType == 'None' ) {
+            return null; // nothing saved, do normal hitbox hit behavior
+        }
+
+        state checkExists = FindStateByString(baseState.."."..subState..self.savedDmgType, true);
+        if( !checkExists ) { // no specific behavior set, do normal hitbox hit behavior
+            return null; 
+        }
+        
+        return checkExists;
+    }
+
+
+    protected
+    void CreateHitbox(Name desc, double dmgMult, double heightOffs, double centerThre, double dmgLeft = -1, double dmgRight = -1)
+    {
+        let ht = New('Hitbox');
+        ht.type = desc;
+        ht.damageMultiplier = dmgMult;
+        ht.heightOffset = heightOffs;
+        ht.centerThreshold = centerThre;
+
+        ht.dmgLeftSide  = (dmgLeft < 0)  ? dmgMult : dmgLeft;
+        ht.dmgRightSide = (dmgRight < 0) ? dmgMult : dmgRight;
+        
+        self.hitboxes.Push(ht);
+    }
+
+
+    /**********************
+        Monster states
+    ***********************/
+    States
+    {
+    Pain:
+        // If there's a need for "generic" custom dmgtype behavior, do it like this for the relevant built-in state.
+        //     E.g. Pain, Death, XDeath.
+        TNT1 A 0 
+        {
+            if( self.savedDmgType == 'Shotgun' ) {
+                return ResolveState('Pain.Shotgun');
+            }
+            return ResolveState(null);
+        }
+    RealPain:
+        POSS G 3;
+        POSS G 3 A_Pain();
+        Goto See;
+    Pain.Shotgun:
+        TNT1 A 0 A_Log("i've been shotgunned generically");
+        TNT1 A 0 A_Jump(128, 'Pain.HeadShotgun');
+        Goto RealPain;
+    Pain.Head:
+        // If the hitbox doesnt have specific behavior for, say, when it's hit by a shotgun,
+        //     there's no need to call this function. Just omit it.
+        TNT1 A 0 JumpIfSpecialDamage('Pain', 'Head');
+        TNT1 A 0 A_Log("HEADSHOT!");
+        POSS G 3;
+        POSS G 5 A_Pain();
+        Goto See;
+    Pain.HeadShotgun:
+        TNT1 A 0 A_Log("BLEW MY HEAD OFF!");
+        POSS G 2;
+        POSS G 3 A_Pain();
+        POSS G 2;
+        POSS G 3 A_Pain();
+        Goto See;
+    Pain.TorsoArmsLeft:
+        TNT1 A 0 A_Log("OUCH MY LEFT ARM");
+        Goto Pain;
+    Pain.TorsoArmsRight:
+        TNT1 A 0 A_Log("OUCH MY RIGHT ARM");
+        Goto Pain;
+    Pain.TorsoArms:
+        TNT1 A 0 A_Log("OUCH MY TORSO");
+        Goto Pain;
+    }
+}
+
+
+// class DebugHT_Zombieman : HT_Zombieman replaces Zombieman
+class DebugHT_Zombieman : HT_Zombieman
+{
+    /*****************************************************
+        Debug
+         This is used to visualize each hitbox boundaries.
+    ******************************************************/
+    override
+    void Tick()
+    {
+        super.Tick();
+        if( hitboxes.Size() != 0 )
+        {
+            // float previouz = self.pos.z + self.height;
+            foreach( ht : hitboxes )
+            {
+                // int starty = floor(self.pos.y - (self.radius*0.5));
+                int r = self.radius;
+                double boxz = (self.pos.z+self.height) - ht.heightOffset;
+                Vector3 offsets = (r, r, 0);
+                Vector3 rotated = RelativeToGlobalCoords((self.pos.xy, boxz), (angle, pitch, roll), offsets);
+                Vector3 sideoffs;
+                Vector3 sideoffs2;
+                if( ht.centerThreshold >= 0 )
+                {
+                    sideoffs = (r,ht.centerThreshold, 0);
+                    sideoffs = RelativeToGlobalCoords((self.pos.xy, boxz), (angle, pitch, roll), sideoffs);
+                    
+                    sideoffs2 = (r,-ht.centerThreshold, 0);
+                    sideoffs2 = RelativeToGlobalCoords((self.pos.xy, boxz), (angle, pitch, roll), sideoffs2);
+                }
+                
+                FSpawnParticleParams fp;
+                fp.color1 = "firebrick3";
+                // fp.pos.x = rotated.x;
+                fp.pos.z = rotated.z;
+                fp.flags = SPF_FULLBRIGHT;
+                fp.style = STYLE_Normal;
+                fp.lifetime = 1;
+                fp.size = 3.0;
+                fp.startalpha = 1.0;
+
+                float finaly = rotated.y + (radius*2)*cos(angle);
+                float finalx = rotated.x - (radius*2)*sin(angle);
+                for( float i = 0.0; i < 1; i += 0.03 )
+                {
+                    fp.pos.y = lerp(rotated.y, finaly, i);
+                    fp.pos.x = lerp(rotated.x, finalx, i);
+                    level.SpawnParticle(fp);
+                }
+
+                if( ht.centerThreshold >= 0 )
+                {
+                    fp.color1 = "royalblue";
+                    // float diffz = previouz - rotated.z; 
+                    fp.pos.x = sideoffs.x;
+                    fp.pos.y = sideoffs.y;
+                    for( int i = 0; i < ht.heightOffset; i++ )
+                    {
+                        fp.pos.z = rotated.z + i;
+                        level.SpawnParticle(fp);
+                    }
+
+                    fp.color1 = "SpringGreen";
+                    fp.pos.x = sideoffs2.x;
+                    fp.pos.y = sideoffs2.y;
+                    for( int i = 0; i < ht.heightOffset; i++ )
+                    {
+                        fp.pos.z = rotated.z + i;
+                        level.SpawnParticle(fp);
+                    }
+                }
+                // previouz = rotated.z;
+            }
+        }
+    }
+
+	float lerp(float v0, float v1, float t) {
+		return (1 - t) * v0 + t * v1;
+	}
+}

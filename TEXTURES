@@ -1,0 +1,5 @@
+sprite PIXLM0, 1, 1 //pixel: magenta
+{
+	offset 1,1
+	patch selectbo, 0, 0 {translation "0:255=251:251"} //patch can be anything, just using it to draw a pixel
+}

@@ -1,0 +1,256 @@
+//Code by Mike Ratzlaff, AKA Sir Robin on ZDoom forums. Use this however you want but please credit me. Thanks!
+
+class Marker3d : actor
+{
+	int TimeToLive,TimeToCycle;
+	default
+	{
+		height 7;
+		radius 7;
+		+RollSprite
+		+NoGravity
+		+NoBlockmap
+		+NoInteraction
+		+FORCEXYBILLBOARD
+		//translation "160:167=176:191,224:231=168:175";//RED
+	}
+	states
+	{
+		spawn:
+			MARK Y -1 bright;
+			stop;
+	}
+	override void BeginPlay()
+	{
+		roll=45;
+	}
+	override void tick()
+	{
+		if (TimeToLive > 0)
+		{
+			if (TimeToLive < 15) A_SetRenderStyle(TimeToLive/15.,STYLE_Translucent);
+			TimeToLive--;
+			if (TimeToLive<=0) destroy();
+		}
+		super.tick();
+	}
+	static Marker3d SpawnAt(vector3 newPos, int TimeToLive, int TimeToCycle)
+	{
+		
+		marker3d m3d = marker3d(spawn("marker3d",newPos));
+		if (m3d)
+		{
+			m3d.TimeToLive=TimeToLive;
+			m3d.TimeToCycle=TimeToCycle;
+		}
+		return m3d;
+	}
+	virtual void Orient(vector3 newPos, double yaw, double pitch, double roll)
+	{
+		setOrigin(newPos,false);
+		self.bFlatSprite=true;
+		self.angle=yaw;
+		self.pitch=pitch;
+		self.roll=roll+45;
+	}
+}
+
+class Line3d : actor
+{
+	int TimeToLive,TimeToCycle;
+	vector3 startVector,deltaVector;
+	actor marker;
+	
+	string AnimMarkerClassName; property AnimMarker:AnimMarkerClassName;
+	
+	default
+	{
+		height 1;
+		radius 1;
+		+NoGravity
+		+NoBlockmap
+		+NoInteraction
+		Line3d.AnimMarker "Marker3d";
+	}
+	states
+	{
+		spawn:
+			PIXL M -1 bright;
+			stop;
+	}
+	
+	override void tick()
+	{
+		TickTTL();
+		TickTTC();
+		super.tick();
+	}
+	override void OnDestroy()
+	{
+		if (marker) marker.Destroy();
+		super.OnDestroy();
+	}
+	
+	virtual void TickTTL()
+	{
+		if (TimeToLive > 0)
+		{
+			if (TimeToLive < 15)
+			{
+				A_SetRenderStyle(TimeToLive/15.,STYLE_Translucent);
+				if (marker) marker.A_SetRenderStyle(TimeToLive/15.,STYLE_Translucent);
+			}
+			TimeToLive--;
+			if (TimeToLive == 0) Destroy();
+		}
+	}
+	
+	virtual void TickTTC()
+	{
+		if (TimeToCycle > 1 && marker)
+		{
+			marker.SetOrigin(startVector + deltaVector * (level.time % TimeToCycle) / (TimeToCycle - 1), false);
+		}
+	}
+	
+	//adjust the endpoints of this line
+	void SetEndPoints(vector3 StartPos, vector3 EndPos, int TimeToLive = -1, int TimeToCycle = 0)
+	{
+		startVector = StartPos;
+		deltaVector = EndPos - StartPos;
+		SetOrigin(StartPos + deltaVector / 2, false);
+		scale.y = deltaVector.length();
+		scale.x = 0.25;
+		pitch = -90 - VectorAngle(deltaVector.xy.length(),deltaVector.z);
+		angle = VectorAngle(deltaVector.x, deltaVector.y);
+		self.TimeToLive=TimeToLive;
+		self.TimeToCycle=TimeToCycle;
+		if (TimeToCycle > 1)
+		{
+			if (marker)//move the existing marker
+				marker.SetOrigin(StartPos,false);
+			else if (AnimMarkerClassName)//spawn a new marker
+			{
+				marker=spawn(AnimMarkerClassName,StartPos);
+				if (!marker)
+				{
+					console.printf("[ERROR] "..AnimMarkerClassName.." not spawnable");//ERROR
+					AnimMarkerClassName="";//don't try again
+				}
+			}
+		}
+		else
+		{
+			if (marker) marker.destroy();
+		}
+		A_SetSize(max(abs(deltaVector.x),abs(deltaVector.y)) / 2, abs(deltaVector.z) / 2);
+	}
+	
+	//spawns a new line3d with the given parameters
+	static Line3d SpawnTo(vector3 StartPos, vector3 EndPos, int TimeToLive = -1, int TimeToCycle = 0)
+	{
+		Line3d l3d = Line3d(actor.spawn("line3d",StartPos));
+		if (l3d) l3d.SetEndPoints(StartPos,EndPos,TimeToLive,TimeToCycle);
+		return l3d;
+	}
+
+	//spawns an actor, if it is line3d subclass, will get the given parameters
+	static Line3d SpawnLine(string ClassName, vector3 StartPos, vector3 EndPos, int TimeToLive = -1, int TimeToCycle = 0)
+	{
+		Actor a = actor.spawn(ClassName,StartPos);
+		if (!a)
+		{
+			console.printf("[ERROR]"..level.time..": Line3d.SpawnLine: "..(ClassName?"Couldn't spawn "..ClassName:"No ClassName"));//ERROR
+			return null;
+		}
+		Line3d l3d = Line3d(a);
+		if (!l3d)
+		{
+			console.printf("[ERROR]"..level.time..": Line3d.SpawnLine: "..ClassName.." couldn't cast to line3d");//ERROR
+			return null;
+		}
+		l3d.SetEndPoints(StartPos,EndPos,TimeToLive,TimeToCycle);
+		return l3d;
+	}
+}
+
+class LaserBlast : Line3d
+{
+	default
+	{
+		translation "0:255=175:175";//make everything RED
+	}
+	override void TickTTL()
+	{
+		if (TimeToLive > 0)
+		{
+			//animate the start point moving to the end
+			SetEndPoints(startVector + deltaVector / TimeToLive, startVector + deltaVector, TimeToLive - 1, TimeToCycle);
+			if (TimeToLive == 0) Destroy();
+		}
+	}
+}
+
+//A place to park some math functions
+//Developed by Mike Ratzlaff (AKA Sir Robin on Zdoom forums) with a tremendous amount of help From Player701
+Struct LineTraceCalc
+{
+	//get the appropriate angle, pitch, and roll from a line trace hit
+	//Note these returns are designed to work with flatsprites only, because flatsprites use some wonky math. Models will need different math.
+	static double, double, double GetHitAnglePitchRoll(FLineTraceData t){
+		double ang, pt, roll;
+
+		switch (t.HitType)
+		{		
+			case TRACE_HitFloor:
+			case TRACE_HitCeiling:
+				[ang, pt, roll] = GetHitAnglePitchRollFromPlane(t);
+				break;
+			case TRACE_HitWall:
+				[ang, pt, roll] = GetHitAnglePitchRollFromLine(t);
+				break;
+			default:
+				return 180+VectorAngle(t.HitDir.x,t.HitDir.y), 270+VectorAngle(t.HitDir.xy.length(),t.HitDir.z), 0;
+		}
+
+		return ang, pt, roll;
+	}
+
+	static double, double, double GetHitAnglePitchRollFromPlane(FLineTraceData t){
+		bool is3dfloor = t.Hit3DFloor != null;
+		SecPlane p;
+
+		if (is3dfloor)
+		{
+			p = t.HitType == TRACE_HitFloor ? t.Hit3DFloor.top : t.Hit3DFloor.bottom;
+		}
+		else if (t.HitType == TRACE_HitFloor)
+		{
+			p = t.HitSector.floorplane;
+		}
+		else // if (t.HitType == TRACE_HitCeiling)
+		{
+			p = t.HitSector.ceilingplane;
+		}
+
+		let n = p.Normal;
+		if (is3dfloor){n=-1*n;}
+		
+		double ang = 0, pt = -asin(n.Z);
+
+		if (n.XY.Length() > 0)
+		{
+			ang = atan2(n.Y, n.X);
+		}
+
+		double roll = VectorAngle(t.HitDir.x,t.HitDir.y) + 180 - ang;
+		return ang, pt - 90, pt > 0 ? roll : -roll;
+	}
+
+	static double, double, double GetHitAnglePitchRollFromLine(FLineTraceData t)
+	{
+		let delta = t.HitLine.delta;
+		double ang = atan2(delta.Y, delta.X);
+		return ang + (t.LineSide == Line.front ? -90 : 90), -90, 0;
+	}
+}
